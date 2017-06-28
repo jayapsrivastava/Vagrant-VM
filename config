@@ -1,3 +1,5 @@
+CUSTFS=custfs
+CSFS=csfs
 MNT_PNT_CUST=/camstor/sources/lustre
 MNT_PNT_CS=/camstor/.mdrepos
 MNT_MARFS=/camstors/archives
@@ -5,3 +7,4 @@ S3_IP=172.16.70.228:8080
 S3_ACCESS_ID=c3BlY3RyYQ==
 S3_SECRET_KEY=uzdH25vy
 S3_BUCKET=ns0
+MNT_LHSM=/mnt/lhsmd

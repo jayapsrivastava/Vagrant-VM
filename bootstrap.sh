@@ -1,6 +1,14 @@
-#!/bin/bash
-set -x
+#!/bin/bash -eux
 
+S3_IP=`cat /vagrant/config | grep S3_IP | awk -F"=" '{print $2}'`
+S3_ACCESS_ID=`cat /vagrant/config | sed -n 's/^ *S3_ACCESS_ID*= *//p'`
+S3_SECRET_KEY=`cat /vagrant/config | grep S3_SECRET_KEY | awk -F"=" '{print $2}'`
+S3_BUCKET=`cat /vagrant/config | grep S3_BUCKET | awk -F"=" '{print $2}'`
+S3_BUCKET_REPO="$S3_BUCKET""repo"
+MNT_MARFS=`cat /vagrant/config | grep MNT_MARFS | awk -F"=" '{print $2}'`
+CUSTFS=`cat /vagrant/config | grep CUSTFS | awk -F"=" '{print $2}'`
+MNT_LHSM=`cat /vagrant/config | grep MNT_LHSM | awk -F"=" '{print $2}'`
+MNT_PNT_CUST=`cat /vagrant/config | grep MNT_PNT_CUST | awk -F"=" '{print $2}'`
 
 function setup_zfs()
 {
@@ -45,7 +53,6 @@ EOF
 
 function setup_lustre_role()
 {
-set -x
   declare -a NODE_OPT
   NODE_OPT=("$@")
   MGS_VM=`hostname`
@@ -77,6 +84,7 @@ set -x
             echo "$MGS_VM - "${NODE_OPT[1]}"-MDT0000 zfs:"${NODE_OPT[2]}"/"${NODE_OPT[0]}"" >> /etc/ldev.conf
             mkdir -p /mnt/lustre/local/"${NODE_OPT[1]}"-"${NODE_OPT[0]}"
             /usr/sbin/mount.lustre "${NODE_OPT[2]}"/"${NODE_OPT[0]}" /mnt/lustre/local/"${NODE_OPT[1]}"-"${NODE_OPT[0]}" 
+            /usr/sbin/lctl set_param -P mdt.*-MDT0000.hsm_control=enabled
             ;;
     'ost')  /usr/sbin/mkfs.lustre --"${NODE_OPT[0]}" --mgsnode=$MGS_IP@tcp0 --backfstype=zfs --index=1 --fsname="${NODE_OPT[1]}" --reformat --verbose "${NODE_OPT[2]}"/""${NODE_OPT[0]}""1""
             echo "$MGS_VM - "${NODE_OPT[1]}"-OST0001 zfs:"${NODE_OPT[2]}"/""${NODE_OPT[0]}""1""" >> /etc/ldev.conf
@@ -85,7 +93,8 @@ set -x
             ;;
 
     'client')  mkdir -p $MNT_POINT
-               /usr/bin/mount -t lustre -o user_xattr $MGS_IP@tcp0:/"${NODE_OPT[1]}" "$MNT_POINT"
+               LIST_NIDS=`/usr/sbin/lctl list_nids`
+               /usr/bin/mount -t lustre -o user_xattr $LIST_NIDS:/"${NODE_OPT[1]}" "$MNT_POINT"
                echo "$MGS_IP@tcp0:/"${NODE_OPT[1]}" "$MNT_POINT" lustre defaults,_netdev,user_xattr 0 00" >> /etc/fstab
                /usr/bin/lfs df -h
                ;;
@@ -96,13 +105,6 @@ set -x
 function setup_marfs_role()
 {
   echo "*set up marfs*"
-  
-  S3_IP=`cat /vagrant/config | grep S3_IP | awk -F"=" '{print $2}'`
-  S3_ACCESS_ID=`cat /vagrant/config | sed -n 's/^ *S3_ACCESS_ID*= *//p'`
-  S3_SECRET_KEY=`cat /vagrant/config | grep S3_SECRET_KEY | awk -F"=" '{print $2}'`
-  S3_BUCKET=`cat /vagrant/config | grep S3_BUCKET | awk -F"=" '{print $2}'`
-  S3_BUCKET_REPO="$S3_BUCKET""repo"
-  MNT_MARFS=`cat /vagrant/config | grep MNT_MARFS | awk -F"=" '{print $2}'`
 
   mkdir -p /camstors/.mdrepos/ #FIX /camstors to /camstor/
   mkdir -p /camstors/.mdrepos/$S3_BUCKET
@@ -229,14 +231,12 @@ EOF
 function setup_lemur_fvio_role()
 {
   echo "*set up lemur-fvio*"
-  FSNAME=$1
-  MGS_IP=`cat /etc/hosts | grep $MGS_VM | tail -n 1 | awk '{print $1}'`
-  MNT_MARFS=`cat /vagrant/config | grep MNT_MARFS | awk -F"=" '{print $2}'`
-  
+  LIST_NIDS=`/usr/sbin/lctl list_nids`
+    
 
   cat <<EOF >/etc/lhsmd/agent
-mount_root = "/mnt/lhsmd"
-client_device = "$MGS_IP@tcp0:/$FSNAME"
+mount_root = "$MNT_LHSM"
+client_device = "$LIST_NIDS:/$CUSTFS"
 enabled_plugins = ["lhsm-plugin-fvio"]
 handler_count = 1
 snapshots {
@@ -294,7 +294,419 @@ root:
     handlers: [console, debug_file_handler, error_file_handler]
 EOF
 
+  mkdir -p /var/run/lhsmd
+  /usr/bin/systemctl enable lhsmd.service
+  /usr/bin/systemctl start lhsmd.service
+  
 }
+
+function setup_robinhood_role()
+{
+  echo "* Set up mariadb and robinhood role *"
+  /usr/bin/systemctl enable mariadb
+  /usr/bin/systemctl start mariadb
+  openssl rand -base64 14 > /etc/robinhood.d/.dbpassword
+  RH_PWD=`cat /etc/robinhood.d/.dbpassword | awk '{print $1}'`
+  ROOT_PWD=`cat /etc/robinhood.d/.dbpassword | awk '{print $1}'`
+  DB_NAME=rbh_$CUSTFS
+
+  echo "Set password $ROOT_PWD"
+  cat <<QQQ  | mysql_secure_installation
+
+n
+y
+y
+y
+y
+QQQ
+
+  if systemctl is-active mariadb.service >/dev/null ; then
+    cat <<SQL | mysql -u root mysql
+update user set password=PASSWORD("$ROOT_PWD") where User='root';
+flush privileges;
+SQL
+  else
+    echo "MariaDB server is not active" >&2
+    exit 1
+  fi
+
+  rbh-config create_db "$DB_NAME" '%' "$RH_PWD" "$ROOT_PWD"
+
+  cat <<EOF >/etc/robinhood.d/$CUSTFS.conf
+# -*- mode: c; c-basic-offset: 4; indent-tabs-mode: nil; -*-
+# vim:expandtab:shiftwidth=4:tabstop=4:
+
+General {
+	fs_path = "$MNT_PNT_CUST";
+	fs_type = lustre;
+}
+
+#### policy definitions ####
+
+# include template policy definitions for Lustre/HSM
+%include "includes/lhsm.inc"
+# include template policy definitions for legacy TMPFS flavor
+%include "includes/tmpfs.inc"
+# include template policy definitions for removing directories
+#%include "includes/rmdir.inc"
+# include template for alerts
+%include "includes/alerts.inc"
+# include template for checksuming
+%include "includes/check.inc"
+
+#### fileclass definitions ####
+
+FileClass even_files {
+    definition { type == file and name == "*[02468]" }
+    # only for policy matching, not to display in reports
+    report = no;
+}
+
+FileClass odd_files {
+    definition { type == file and name == "*[13579]" }
+    lhsm_archive_action_params { archive_id = 2; }
+    report = no;
+}
+
+# fileclasses to display in reports (can still be used in policies)
+FileClass empty_files {
+    definition { type == file and size == 0 }
+    # report = yes (default)
+}
+FileClass small_files {
+    definition { type == file and size > 0 and size <= 16MB }
+    # report = yes (default)
+}
+FileClass std_files {
+    definition { type == file and size > 16MB and size <= 1GB }
+}
+FileClass big_files {
+    definition { type == file and size > 1GB }
+}
+
+FileClass largedir {
+    definition { type == directory and dircount > 10000 }
+}
+
+FileClass f1 {
+    definition { type == file and name == "file.1" }
+}
+
+FileClass f2 {
+    definition { type == file and name == "file.2" }
+}
+
+#### Common Lustre/HSM parameters ####
+
+lhsm_config {
+    # used for 'undelete': command to change the fid of an entry in archive
+    rebind_cmd = "/usr/sbin/lhsmtool_posix --hsm_root=/mnt/hsm_backup --archive {archive_id} --rebind {oldfid} {newfid} {fsroot}";
+    uuid {
+        # where the CT stored the UUID
+        xattr = "trusted.lhsm_uuid";
+    }
+}
+
+#### Lustre/HSM archive configuration ####
+
+lhsm_archive_parameters {
+    nb_threads = 8;
+## archive 1000 files max at once
+#    max_action_count = 1000;
+#    max_action_volume = 1TB;
+
+    # suspend policy run if action error rate > 50% (after 100 errors)
+    suspend_error_pct = 50%;
+    suspend_error_min = 100;
+
+    # overrides policy default action
+    # action = cmd("lfs hsm_archive --archive {archive_id} /mnt/lustre/.lustre/fid/{fid}");
+
+    # default action parameters
+    action_params {
+        archive_id = 1;
+    }
+}
+
+lhsm_archive_rules {
+    ignore_fileclass = empty_files;
+
+    rule archive_small {
+        target_fileclass = small_files;
+        condition { last_mod >= 10sec }
+
+        # overrides policy action
+        # action = cmd("lfs hsm_archive {fullpath}");
+        action_params { archive_id = 1; }
+    }
+
+    rule archive_std {
+        target_fileclass = std_files;
+        target_fileclass = big_files;
+        action_params { archive_id = 2; }
+        condition { last_mod >= 30min }
+    }
+
+    # fallback rule
+    rule default {
+        action_params { archive_id = 3; }
+        condition { last_mod >= 30min }
+    }
+}
+
+# run every 5 min
+lhsm_archive_trigger {
+    trigger_on = periodic;
+    check_interval = 5min;
+}
+
+#### Lustre/HSM release configuration ####
+
+lhsm_release_rules {
+    ignore_fileclass = empty_files;
+
+    # keep small files on disk as long as possible
+    rule release_small {
+        target_fileclass = small_files;
+        condition { last_access > 1y }
+    }
+
+    rule release_std {
+        target_fileclass = std_files;
+        target_fileclass = big_files;
+        condition { last_access > 1d }
+    }
+
+    # fallback rule
+    rule default {
+        condition { last_access > 6h }
+    }
+}
+
+# run 'lhsm_release' on full OSTs
+lhsm_release_trigger {
+    trigger_on = ost_usage;
+    high_threshold_pct = 85%;
+    low_threshold_pct  = 80%;
+    check_interval     = 5min;
+}
+
+lhsm_release_parameters {
+    nb_threads = 8;
+## purge 1000 files max at once
+#    max_action_count = 1000;
+#    max_action_volume = 1TB;
+
+    # suspend policy run if action error rate > 50% (after 100 errors)
+    suspend_error_pct = 50%;
+    suspend_error_min= 100;
+}
+
+
+#### Deleting old unused files #######
+
+cleanup_rules {
+    rule default {
+        condition { last_access > 30d }
+    }
+}
+
+# clean when inode count > 100M
+cleanup_trigger {
+    trigger_on = global_usage;
+    high_threshold_cnt = 100M;
+    low_threshold_cnt  = 100M;
+    check_interval     = 5min;
+}
+
+### Alerts specification
+alert_rules {
+
+    # don't check entries more frequently than daily
+    ignore { last_check < 1d }
+    # don't check entries while they are modified
+    ignore { last_mod < 1h }
+
+    rule raise_alert {
+        ## List all fileclasses that would raise alerts HERE:
+        target_fileclass = f1;
+        target_fileclass = f2;
+        target_fileclass = largedir;
+
+        # customize alert title:
+        action_params { title = "entry matches '{fileclass}' ({rule})"; }
+
+        # apply to all matching fileclasses in the policy scope
+        condition = true;
+    }
+
+    # clear alert status
+    rule default {
+        action = none;
+        action_params { alert = clear; }
+        # apply to all entries that don't match 'raise_alert'
+        condition = true;
+    }
+}
+
+# trigger alert check hourly
+alert_trigger {
+    trigger_on = periodic;
+    check_interval = 1h;
+}
+
+
+########### checksum rules ############
+
+fileclass never_checked {
+    # never checked or no successful check
+    definition { checksum.last_success == 0 }
+    # don't display this fileclass in --classinfo reports.
+    report = no;
+}
+
+checksum_rules {
+    ignore { last_check < 7d }
+    ignore { last_mod < 1d }
+
+    rule initial_check {
+        target_fileclass = never_checked;
+        condition { last_mod > 1d }
+    }
+
+    rule default {
+       condition { last_mod > 1d and last_check > 7d }
+    }
+}
+
+# start checksum hourly
+checksum_trigger {
+    trigger_on = periodic;
+    check_interval = 1h;
+}
+
+############# rmdir rules ############
+
+rmdir_empty_parameters {
+    lru_sort_attr = none;
+}
+
+rmdir_empty_trigger {
+    trigger_on = periodic;
+    check_interval = 1h;
+}
+
+rmdir_empty_rules {
+    ignore { depth < 4 }
+
+    rule default {
+        condition { last_mod > 15d }
+    }
+}
+
+########### end of policy rules ############
+
+
+# ChangeLog Reader configuration
+# Parameters for processing MDT changelogs :
+ChangeLog {
+    # 1 MDT block for each MDT :
+    MDT {
+        # name of the first MDT
+        mdt_name  = "MDT0000" ;
+
+        # id of the persistent changelog reader
+        # as returned by "lctl changelog_register" command
+        reader_id = "cl2" ;
+    }
+    polling_interval = 1s;
+}
+
+Log {
+    # Log verbosity level
+    # Possible values are: CRIT, MAJOR, EVENT, VERB, DEBUG, FULL
+    debug_level = EVENT;
+
+    # Log file
+    log_file = "/var/log/robinhood.log";
+
+    # File for reporting purge events
+    report_file = "/var/log/robinhood_actions.log";
+
+    # set alert_file, alert_mail or both depending on the alert method you wish
+    alert_file = "/var/log/robinhood_alerts.log";
+    alert_show_attrs = yes;
+}
+
+ListManager {
+        MySQL {
+                server = "localhost";
+                db = $DB_NAME;
+                user = "robinhood";
+                # password or password_file are mandatory
+                # password = "robinhood";
+                password_file = /etc/robinhood.d/.dbpassword;
+                engine = innodb;
+        }
+}
+EOF
+
+  /usr/sbin/robinhood --scan --once -L stderr
+}
+
+function setup_pftool_role()
+{
+  echo "* Set up pftool role *"
+  if grep -Fxq "localhost slots=4" /etc/openmpi-x86_64/openmpi-default-hostfile
+  then
+    echo "Don't update /etc/openmpi-x86_64/openmpi-default-hostfile!!"
+  else
+    echo "localhost slots=4" >> /etc/openmpi-x86_64/openmpi-default-hostfile
+  fi
+
+  if grep "btl" /etc/openmpi-x86_64/openmpi-mca-params.conf
+  then
+    echo "Don't update /etc/openmpi-x86_64/openmpi-mca-params.conf !!"
+  else
+    echo "btl = tcp,sm,self" >> /etc/openmpi-x86_64/openmpi-mca-params.conf
+  fi
+
+  cat <<EOF >/home/vagrant/.bashrc
+# .bashrc
+
+# Source global definitions
+if [ -f /etc/bashrc ]; then
+        . /etc/bashrc
+fi
+module load mpi/openmpi-x86_64
+
+# Uncomment the following line if you don't like systemctl's auto-paging feature:
+# export SYSTEMD_PAGER=
+
+# User specific aliases and functions
+EOF
+
+  cat <<EOF >/root/.bashrc
+# .bashrc
+
+# User specific aliases and functions
+
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+
+# Source global definitions
+if [ -f /etc/bashrc ]; then
+        . /etc/bashrc
+fi
+
+module load mpi/openmpi-x86_64
+EOF
+  chmod 777 /home/vagrant/.bashrc
+  chmod 777 /root/.bashrc   
+}
+
+# main
 
 if [ $# -eq 4 ]
 then
