@@ -28,7 +28,7 @@ Vagrant.configure("2") do |config|
     config.vm.define "vm#{i}" do |vms|
       vms.vm.network "private_network", type: "dhcp"
       vms.vm.hostname = "vm#{i}"  
-
+=begin
       # create zpool for customer-lustre - device
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_zfs' 'cust-pool'"
 
@@ -45,7 +45,9 @@ Vagrant.configure("2") do |config|
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lustre_role' 'mdt' 'csfs' 'cs-pool'"
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lustre_role' 'ost' 'csfs' 'cs-pool'"
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lustre_role' 'client' 'csfs' 'cs-pool'"
-
+=end
+      # Setup marfs
+      vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_marfs_role'"
     end
   end
 end
