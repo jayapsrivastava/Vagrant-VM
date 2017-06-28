@@ -1,22 +1,15 @@
-Passwordless sudo (plugin - vagrant-hostmanager)
-===================================================
+Steps to use this VM -
+-----------------------
 
-To avoid being asked for the password every time the hosts file is updated, enable passwordless sudo for the specific command that hostmanager uses to update the hosts file.
+1. vagrant box created using packer.io should be added in Vagrantfile at line no.
+#12   config.vm.box = "csbase-image"
 
-Add the following snippet to the sudoers file (e.g. /etc/sudoers.d/vagrant_hostmanager):
+where, "csbase-image" is a vagrant box name
 
-Cmnd_Alias VAGRANT_HOSTMANAGER_UPDATE = /bin/cp <home-directory>/.vagrant.d/tmp/hosts.local /etc/hosts
-%<admin-group> ALL=(root) NOPASSWD: VAGRANT_HOSTMANAGER_UPDATE
+2. command to execute 
+(For linux)
+# vagrant up --provider=vmware_workstation
 
-e.g : 
-------
+(For MAC)
+# vagrant up --provider=vmware_fusion
 
-Cmnd_Alias VAGRANT_HOSTMANAGER_UPDATE = /bin/cp /home/jshri/.vagrant.d/tmp/hosts.local /etc/hosts
-%wheel ALL=(root) NOPASSWD: VAGRANT_HOSTMANAGER_UPDATE
-
-Replace <home-directory> with your actual home directory (e.g. /home/joe) and <admin-group> with the group that is used by the system for sudo access (usually sudo on Debian/Ubuntu systems and wheel on Fedora/Red Hat systems).
-
-If necessary, add yourself to the <admin-group>:
-
-usermod -aG <admin-group> <user-name>
-Replace <admin-group> with the group that is used by the system for sudo access (see above) and <user-name> with you user name

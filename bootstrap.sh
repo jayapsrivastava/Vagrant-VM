@@ -56,7 +56,8 @@ function setup_lustre_role()
   declare -a NODE_OPT
   NODE_OPT=("$@")
   MGS_VM=`hostname`
-  MGS_IP=`cat /etc/hosts | grep $MGS_VM | tail -n 1 | awk '{print $1}'`
+  #MGS_IP=`cat /etc/hosts | grep $MGS_VM | tail -n 1 | awk '{print $1}'`
+  MGS_IP=`hostname -I | awk -F " " '{print $1}'`
   if [ "${NODE_OPT[1]}" == "custfs" ]
   then
     MNT_POINT=`cat /vagrant/config | grep MNT_PNT_CUST | awk -F"=" '{print $2}'`

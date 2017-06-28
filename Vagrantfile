@@ -11,13 +11,12 @@ VM_COUNT = 1
 Vagrant.configure("2") do |config|
   config.vm.box = "csbase-image"
 
-  config.hostmanager.enabled = true
-  config.hostmanager.manage_host = true
-  config.hostmanager.ignore_private_ip = false
-  config.hostmanager.include_offline = true
-  config.vm.provision :hostmanager 
-
   config.vm.provider :vmware_workstation do |vm,override|
+    vm.vmx["memsize"] = "1024"
+    vm.vmx["numvcpus"] = "2"
+  end
+
+  config.vm.provider :vmware_fusion do |vm,override|
     vm.vmx["memsize"] = "1024"
     vm.vmx["numvcpus"] = "2"
   end
@@ -32,7 +31,7 @@ Vagrant.configure("2") do |config|
       # create zpool for customer-lustre - device
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_zfs' 'cust-pool'"
 
-      # customer-lustre,  args => function_name role fsname pool_name
+      # customer-lustre role,  args => function_name role fsname pool_name
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lustre_role' 'mgs' 'custfs' 'cust-pool'"
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lustre_role' 'mdt' 'custfs' 'cust-pool'"
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lustre_role' 'ost' 'custfs' 'cust-pool'"
@@ -41,15 +40,15 @@ Vagrant.configure("2") do |config|
       # create zpool for cs-lustre - device
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_zfs' 'cs-pool'"
 
-      # cs-lustre, args => function_name role fsname pool_name
+      # cs-lustre role, args => function_name role fsname pool_name
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lustre_role' 'mdt' 'csfs' 'cs-pool'"
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lustre_role' 'ost' 'csfs' 'cs-pool'"
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lustre_role' 'client' 'csfs' 'cs-pool'"
 
-      # Setup marfs
+      # Setup marfs role
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_marfs_role'"
 
-      # Setup lemur-fvio
+      # Setup lemur-fvio role
       vms.vm.provision :shell, :path => "bootstrap.sh", :args => "'setup_lemur_fvio_role'"
 
       # Setup robinhood role
